@@ -180,27 +180,69 @@ function Invoke-PreBuildValidator {
     Provedor de IA selecionado
 .PARAMETER AIApiKey
     API Key da IA
+.PARAMETER UseFallback
+    Se true, gera workflow sem script Python (apenas Gradle direto)
 #>
 function Invoke-WorkflowGenerator {
     param(
         [string]$RootPath,
         [string]$AIProvider = "DeepSeek",
-        [string]$AIApiKey = $null
+        [string]$AIApiKey = $null,
+        [bool]$UseFallback = $false
     )
     
     $workflowDir = "$RootPath/.github/workflows"
     New-Item -ItemType Directory -Path $workflowDir -Force | Out-Null
     
-    # Determinar qual variável de ambiente usar baseada no provedor
-    $envVar = switch ($AIProvider) {
-        "OpenAI" { "OPENAI_API_KEY" }
-        "Anthropic" { "ANTHROPIC_API_KEY" }
-        "Google" { "GEMINI_API_KEY" }
-        "DeepSeek" { "DEEPSEEK_API_KEY" }
-        default { "DEEPSEEK_API_KEY" }
-    }
+    if ($UseFallback) {
+        # Workflow de fallback - apenas Gradle direto
+        $workflow = @"
+name: Compilar APK Debug (Direto)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
     
-    $workflow = @"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+        
+      - name: Compilar APK (Gradle Direto)
+        run: ./gradlew assembleDebug --stacktrace
+        
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+"@
+        Set-Content -Path "$workflowDir/android.yml" -Value $workflow -Encoding UTF8
+        Write-Log "Workflow GitHub Actions gerado (MODO FALLBACK - Sem IA)" "OK"
+    } else {
+        # Workflow com IA
+        $envVar = switch ($AIProvider) {
+            "OpenAI" { "OPENAI_API_KEY" }
+            "Anthropic" { "ANTHROPIC_API_KEY" }
+            "Google" { "GEMINI_API_KEY" }
+            "DeepSeek" { "DEEPSEEK_API_KEY" }
+            default { "DEEPSEEK_API_KEY" }
+        }
+        
+        $workflow = @"
 name: Android APK Build
 
 on:
@@ -243,9 +285,9 @@ jobs:
           name: app-debug
           path: app/build/outputs/apk/debug/app-debug.apk
 "@
-    
-    Set-Content -Path "$workflowDir/android.yml" -Value $workflow -Encoding UTF8
-    Write-Log "Workflow GitHub Actions gerado com provedor IA: $AIProvider" "OK"
+        Set-Content -Path "$workflowDir/android.yml" -Value $workflow -Encoding UTF8
+        Write-Log "Workflow GitHub Actions gerado com provedor IA: $AIProvider" "OK"
+    }
 }
 
 <#
@@ -530,6 +572,8 @@ function Remove-TemporaryRepository {
     API Key da IA
 .PARAMETER LogCallback
     Callback para log
+.PARAMETER SkipToolsCopy
+    Se true, não copia a pasta tools/ (para fallback)
 .OUTPUTS
     Hashtable com resultado do build
 #>
@@ -539,7 +583,8 @@ function Invoke-BuildOrchestrator {
         [string]$GitHubToken,
         [string]$AIProvider = "DeepSeek",
         [string]$AIApiKey = $null,
-        [scriptblock]$LogCallback
+        [scriptblock]$LogCallback,
+        [bool]$SkipToolsCopy = $false
     )
     
     Write-Log "════════ BUILDORCHESTRATOR ════════" "OK"
@@ -562,19 +607,23 @@ function Invoke-BuildOrchestrator {
         Copy-Item -Path $RootPath -Destination $tempDir -Recurse -Force
         Write-Log "Projeto copiado para: $tempDir" "OK"
 
-        # Copy Self-Healing compiler tool
-        $toolsDir = "$tempDir/tools"
-        if (-not (Test-Path $toolsDir)) {
-            New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
-        }
-        $sourceCompiler = Join-Path $PSScriptRoot "..\tools\self_healing_compiler.py"
-        if (Test-Path $sourceCompiler) {
-            Copy-Item -Path $sourceCompiler -Destination "$toolsDir\self_healing_compiler.py" -Force
-            Write-Log "Ferramenta de Auto-Cura IA copiada para o projeto temporário" "OK"
+        # Copy Self-Healing compiler tool (only if not skipping)
+        if (-not $SkipToolsCopy) {
+            $toolsDir = "$tempDir/tools"
+            if (-not (Test-Path $toolsDir)) {
+                New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+            }
+            $sourceCompiler = Join-Path $PSScriptRoot "..\tools\self_healing_compiler.py"
+            if (Test-Path $sourceCompiler) {
+                Copy-Item -Path $sourceCompiler -Destination "$toolsDir\self_healing_compiler.py" -Force
+                Write-Log "Ferramenta de Auto-Cura IA copiada para o projeto temporário" "OK"
+            }
+        } else {
+            Write-Log "Pulando cópia de tools/ (modo fallback)" "INFO"
         }
         
         # 3. Gerar workflow com configuração de IA
-        Invoke-WorkflowGenerator -RootPath $tempDir -AIProvider $AIProvider -AIApiKey $AIApiKey
+        Invoke-WorkflowGenerator -RootPath $tempDir -AIProvider $AIProvider -AIApiKey $AIApiKey -UseFallback:$SkipToolsCopy
         
         # 4. Obter usuário do GitHub
         $tokenValidation = Test-GitHubToken -Token $GitHubToken
@@ -635,5 +684,92 @@ function Invoke-BuildOrchestrator {
     }
 }
 
+<#
+.SYNOPSIS
+    Executa build resiliente com fallback automático
+.DESCRIPTION
+    Tenta build com IA primeiro, se falhar usa build direto com Gradle
+.PARAMETER RootPath
+    Caminho raiz do projeto
+.PARAMETER GitHubToken
+    Token GitHub
+.PARAMETER AIProvider
+    Provedor de IA selecionado
+.PARAMETER AIApiKey
+    API Key da IA
+.PARAMETER LogCallback
+    Callback para log
+.OUTPUTS
+    Hashtable com resultado do build e qual caminho foi usado
+#>
+function Invoke-ResilientBuild {
+    param(
+        [string]$RootPath,
+        [string]$GitHubToken,
+        [string]$AIProvider = "DeepSeek",
+        [string]$AIApiKey = $null,
+        [scriptblock]$LogCallback
+    )
+    
+    Write-Log "════════ RESILIENT BUILD SYSTEM ════════" "OK"
+    Write-Log "🧠 Sistema de Build Resiliente com Fallback Automático" "OK"
+    
+    # --- CAMADA 1: Tentar Auto-Cura com IA ---
+    Write-Log "[BUILD] 🤖 Camada 1: Tentando build com Auto-Cura IA..." "INFO"
+    
+    $layer1Result = Invoke-BuildOrchestrator -RootPath $RootPath -GitHubToken $GitHubToken -AIProvider $AIProvider -AIApiKey $AIApiKey -LogCallback $LogCallback -SkipToolsCopy:$false
+    
+    if ($layer1Result.Status -eq "SUCCESS") {
+        Write-Log "[BUILD] ✅ Sucesso com Auto-Cura IA!" "OK"
+        $layer1Result.BuildMethod = "AI_Powered"
+        $layer1Result.FallbackUsed = $false
+        return $layer1Result
+    }
+    
+    Write-Log "[BUILD] ⚠️ Auto-Cura IA falhou. Iniciando Camada 2..." "INFO"
+    Write-Log "[BUILD] Motivo da falha: $($layer1Result.Status)" "AVISO"
+    if ($layer1Result.Error) {
+        Write-Log "[BUILD] Detalhes: $($layer1Result.Error)" "AVISO"
+    }
+    
+    # --- CAMADA 2: Fallback para Build Gradle Direto ---
+    Write-Log "[BUILD] 🔧 Camada 2: Iniciando Build Gradle Direto (Fallback)..." "INFO"
+    
+    # Limpar recursos temporários do primeiro build se existirem
+    try {
+        $tokenValidation = Test-GitHubToken -Token $GitHubToken
+        if ($tokenValidation.Valid) {
+            $tempDirs = Get-ChildItem "$env:TEMP" -Filter "apk-build-*" -Directory -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip 1
+            foreach ($dir in $tempDirs) {
+                try {
+                    Remove-Item $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                } catch {}
+            }
+        }
+    } catch {}
+    
+    # Executar build com fallback (sem IA, sem tools/)
+    $layer2Result = Invoke-BuildOrchestrator -RootPath $RootPath -GitHubToken $GitHubToken -AIProvider $AIProvider -AIApiKey $null -LogCallback $LogCallback -SkipToolsCopy:$true
+    
+    if ($layer2Result.Status -eq "SUCCESS") {
+        Write-Log "[BUILD] ✅ Sucesso com Build Direto (Fallback)!" "OK"
+        $layer2Result.BuildMethod = "Gradle_Direct"
+        $layer2Result.FallbackUsed = $true
+        $layer2Result.Layer1Error = $layer1Result.Error
+        return $layer2Result
+    }
+    
+    # Ambas as camadas falharam
+    Write-Log "[BUILD] ❌ Ambas as camadas falharam. Build não foi possível." "ERRO"
+    return @{
+        Status = "FAILED"
+        Error = "Ambas as camadas (IA e Gradle Direto) falharam"
+        Layer1Error = $layer1Result.Error
+        Layer2Error = $layer2Result.Error
+        BuildMethod = "None"
+        FallbackUsed = $true
+    }
+}
+
 # Exportar funções
-Export-ModuleMember -Function Invoke-PreBuildValidator, Invoke-WorkflowGenerator, Initialize-GitRepository, Invoke-BuildMonitor, Receive-BuildArtifact, Remove-TemporaryRepository, Invoke-BuildOrchestrator, Invoke-ErrorInterpreter
+Export-ModuleMember -Function Invoke-PreBuildValidator, Invoke-WorkflowGenerator, Initialize-GitRepository, Invoke-BuildMonitor, Receive-BuildArtifact, Remove-TemporaryRepository, Invoke-BuildOrchestrator, Invoke-ErrorInterpreter, Invoke-ResilientBuild

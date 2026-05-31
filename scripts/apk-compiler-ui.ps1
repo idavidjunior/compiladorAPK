@@ -1,4 +1,4 @@
-﻿﻿# ============================================================
+﻿﻿﻿# ============================================================
 # Compilador APK v10.0 - AI-Powered com DeepSeek
 # BUILD: 250a8e3-AI
 # ============================================================
@@ -4137,7 +4137,6 @@ $cmbAIProvider.Add_SelectionChanged({
         Set-AIProvider -Provider $provider
         
         # Atualizar informações do provedor
-        $config = Get-AIProviderConfig -Provider $provider
         $infoText = switch ($provider) {
             "DeepSeek" { "Configure a API Key para usar análise inteligente automática. Obtenha em: https://platform.deepseek.com/" }
             "OpenAI" { "Configure a API Key para usar análise inteligente automática. Obtenha em: https://platform.openai.com/api-keys" }

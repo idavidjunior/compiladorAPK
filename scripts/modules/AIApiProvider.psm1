@@ -41,8 +41,8 @@ $script:SupportedProviders = @{
     "Google" = @{
         Name = "Google Gemini"
         ApiUrl = "https://generativelanguage.googleapis.com/v1beta/models"
-        Model = "gemini-pro"
-        Models = @("gemini-pro", "gemini-pro-vision")
+        Model = "gemini-1.5-flash"
+        Models = @("gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro")
         Headers = @{
             "Content-Type" = "application/json"
         }
@@ -221,20 +221,40 @@ function Test-AIApiKey {
         
         # Ajustar para Google Gemini
         if ($script:CurrentProvider -eq "Google") {
-            $uri = "$($config.ApiUrl)/$($config.Model):generateContent?key=$apiKey"
-            $body = @{
-                contents = @(
-                    @{
-                        parts = @(
+            # Tentar validar listando modelos disponíveis primeiro (mais confiável)
+            try {
+                $listUri = "https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey"
+                $modelsResponse = Invoke-RestMethod -Uri $listUri -Method Get -Headers $config.Headers
+                if ($modelsResponse.models -and $modelsResponse.models.Count -gt 0) {
+                    # Key válida - verificar se gemini-pro está disponível
+                    $hasGeminiPro = $modelsResponse.models | Where-Object { $_.name -like "*gemini-pro*" }
+                    if (-not $hasGeminiPro) {
+                        return @{ Valid = $false; Error = "API Key válida, mas modelo gemini-pro não disponível. Modelos disponíveis: $($modelsResponse.models.name -join ', ')"; Provider = $script:CurrentProvider }
+                    }
+                    # Teste simples de generateContent
+                    $uri = "$($config.ApiUrl)/$($config.Model):generateContent?key=$apiKey"
+                    $body = @{
+                        contents = @(
                             @{
-                                text = "test"
+                                parts = @(
+                                    @{
+                                        text = "test"
+                                    }
+                                )
                             }
                         )
                     }
-                )
+                    $jsonBody = $body | ConvertTo-Json -Depth 10
+                    $null = Invoke-RestMethod -Uri $uri -Method Post -Headers $config.Headers -Body $jsonBody
+                }
+            } catch {
+                if ($_.Exception.Response.StatusCode -eq 403) {
+                    return @{ Valid = $false; Error = "API Key sem permissão ou restrita. Verifique as restrições no Google AI Studio."; Provider = $script:CurrentProvider }
+                } elseif ($_.Exception.Response.StatusCode -eq 400) {
+                    return @{ Valid = $false; Error = "API Key inválida ou formato incorreto. Verifique se é uma chave do Google AI Studio (Gemini API)."; Provider = $script:CurrentProvider }
+                }
+                throw $_
             }
-            $jsonBody = $body | ConvertTo-Json -Depth 10
-            $null = Invoke-RestMethod -Uri $uri -Method Post -Headers $config.Headers -Body $jsonBody
         } else {
             $jsonBody = $body | ConvertTo-Json -Depth 10
             $null = Invoke-RestMethod -Uri $config.ApiUrl -Method Post -Headers $headers -Body $jsonBody
