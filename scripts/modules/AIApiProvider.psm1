@@ -41,8 +41,8 @@ $script:SupportedProviders = @{
     "Google" = @{
         Name = "Google Gemini"
         ApiUrl = "https://generativelanguage.googleapis.com/v1beta/models"
-        Model = "gemini-1.5-flash"
-        Models = @("gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro")
+        Model = "gemini-3.5-flash"
+        Models = @("gemini-3.5-flash", "gemini-3.5-pro", "gemini-2.5-pro")
         Headers = @{
             "Content-Type" = "application/json"
         }
@@ -223,16 +223,24 @@ function Test-AIApiKey {
         if ($script:CurrentProvider -eq "Google") {
             # Tentar validar listando modelos disponíveis primeiro (mais confiável)
             try {
+                Write-Log "[Google API] Validando API key listando modelos disponíveis" "INFO"
                 $listUri = "https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey"
+                Write-Log "[Google API] Endpoint de listagem: $listUri" "INFO"
                 $modelsResponse = Invoke-RestMethod -Uri $listUri -Method Get -Headers $config.Headers
+                Write-Log "[Google API] Lista de modelos recebida com sucesso" "OK"
                 if ($modelsResponse.models -and $modelsResponse.models.Count -gt 0) {
-                    # Key válida - verificar se gemini-pro está disponível
-                    $hasGeminiPro = $modelsResponse.models | Where-Object { $_.name -like "*gemini-pro*" }
-                    if (-not $hasGeminiPro) {
-                        return @{ Valid = $false; Error = "API Key válida, mas modelo gemini-pro não disponível. Modelos disponíveis: $($modelsResponse.models.name -join ', ')"; Provider = $script:CurrentProvider }
+                    Write-Log "[Google API] Encontrados $($modelsResponse.models.Count) modelos disponíveis" "INFO"
+                    Write-Log "[Google API] Modelos: $($modelsResponse.models.name -join ', ')" "INFO"
+                    # Key válida - verificar se o modelo configurado está disponível
+                    $hasConfiguredModel = $modelsResponse.models | Where-Object { $_.name -like "*$($config.Model)*" }
+                    if (-not $hasConfiguredModel) {
+                        Write-Log "[Google API] Modelo $($config.Model) não encontrado na lista de disponíveis" "ERRO"
+                        return @{ Valid = $false; Error = "API Key válida, mas modelo $($config.Model) não disponível. Modelos disponíveis: $($modelsResponse.models.name -join ', ')"; Provider = $script:CurrentProvider }
                     }
+                    Write-Log "[Google API] Modelo $($config.Model) encontrado, realizando teste de generateContent" "INFO"
                     # Teste simples de generateContent
                     $uri = "$($config.ApiUrl)/$($config.Model):generateContent?key=$apiKey"
+                    Write-Log "[Google API] Endpoint de teste: $uri" "INFO"
                     $body = @{
                         contents = @(
                             @{
@@ -246,13 +254,21 @@ function Test-AIApiKey {
                     }
                     $jsonBody = $body | ConvertTo-Json -Depth 10
                     $null = Invoke-RestMethod -Uri $uri -Method Post -Headers $config.Headers -Body $jsonBody
+                    Write-Log "[Google API] Teste de generateContent realizado com sucesso" "OK"
                 }
             } catch {
+                Write-Log "[Google API] Erro na validação: $($_.Exception.Message)" "ERRO"
+                if ($_.Exception.Response) {
+                    Write-Log "[Google API] Status Code: $($_.Exception.Response.StatusCode)" "ERRO"
+                }
                 if ($_.Exception.Response.StatusCode -eq 403) {
+                    Write-Log "[Google API] API Key sem permissão (403)" "ERRO"
                     return @{ Valid = $false; Error = "API Key sem permissão ou restrita. Verifique as restrições no Google AI Studio."; Provider = $script:CurrentProvider }
                 } elseif ($_.Exception.Response.StatusCode -eq 400) {
+                    Write-Log "[Google API] API Key inválida (400)" "ERRO"
                     return @{ Valid = $false; Error = "API Key inválida ou formato incorreto. Verifique se é uma chave do Google AI Studio (Gemini API)."; Provider = $script:CurrentProvider }
                 }
+                Write-Log "[Google API] Erro não tratado, lançando exceção" "ERRO"
                 throw $_
             }
         } else {
@@ -403,6 +419,8 @@ Package: $PackageName
             }
         } elseif ($script:CurrentProvider -eq "Google") {
             $uri = "$($config.ApiUrl)/$($config.Model):generateContent?key=$apiKey"
+            Write-Log "[Google API] Chamando endpoint: $uri" "INFO"
+            Write-Log "[Google API] Modelo: $($config.Model)" "INFO"
             $body = @{
                 contents = @(
                     @{
@@ -434,24 +452,38 @@ Package: $PackageName
         }
         
         $jsonBody = $body | ConvertTo-Json -Depth 10
+        Write-Log "[IA] Enviando requisição para $script:CurrentProvider (tamanho: $($jsonBody.Length) caracteres)" "INFO"
         
         # Usar Invoke-ResilientRestMethod se disponível
         if (Get-Command Invoke-ResilientRestMethod -ErrorAction SilentlyContinue) {
+            Write-Log "[IA] Usando Invoke-ResilientRestMethod com retry" "INFO"
             $response = Invoke-ResilientRestMethod -Uri $uri -Method Post -Headers $headers -Body $jsonBody -MaxRetries 3
         } else {
+            Write-Log "[IA] Usando Invoke-RestMethod padrão" "INFO"
             $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $jsonBody
         }
+        Write-Log "[IA] Resposta recebida de $script:CurrentProvider (status: sucesso)" "OK"
         
         # Extrair conteúdo da resposta conforme o provedor
         $jsonText = $null
         
         if ($script:CurrentProvider -eq "Anthropic") {
             $jsonText = $response.content[0].text
+            Write-Log "[Anthropic] Resposta extraída (tamanho: $($jsonText.Length) caracteres)" "INFO"
         } elseif ($script:CurrentProvider -eq "Google") {
-            $jsonText = $response.candidates[0].content.parts[0].text
+            if ($response.candidates -and $response.candidates.Count -gt 0) {
+                $jsonText = $response.candidates[0].content.parts[0].text
+                Write-Log "[Google API] Resposta extraída com sucesso (tamanho: $($jsonText.Length) caracteres)" "INFO"
+                Write-Log "[Google API] Número de candidates: $($response.candidates.Count)" "INFO"
+            } else {
+                Write-Log "[Google API] ERRO: Resposta não contém candidates" "ERRO"
+                Write-Log "[Google API] Resposta bruta: $($response | ConvertTo-Json -Depth 10)" "ERRO"
+                return $null
+            }
         } else {
             # OpenAI e DeepSeek
             $jsonText = $response.choices[0].message.content
+            Write-Log "[$script:CurrentProvider] Resposta extraída (tamanho: $($jsonText.Length) caracteres)" "INFO"
         }
         
         # Extrair JSON da resposta
@@ -470,6 +502,10 @@ Package: $PackageName
         
     } catch {
         Write-Log "[IA] Erro na análise: $($_.Exception.Message)" "ERRO"
+        Write-Log "[IA] Detalhes do erro: $($_.Exception | ConvertTo-Json -Depth 5)" "ERRO"
+        if ($_.Exception.Response) {
+            Write-Log "[IA] Status Code: $($_.Exception.Response.StatusCode)" "ERRO"
+        }
         return $null
     }
 }
@@ -546,6 +582,8 @@ Seja específico e forneça código que possa ser aplicado diretamente.
             }
         } elseif ($script:CurrentProvider -eq "Google") {
             $uri = "$($config.ApiUrl)/$($config.Model):generateContent?key=$apiKey"
+            Write-Log "[Google API] Chamando endpoint para correção: $uri" "INFO"
+            Write-Log "[Google API] Modelo: $($config.Model)" "INFO"
             $body = @{
                 contents = @(
                     @{
@@ -576,21 +614,35 @@ Seja específico e forneça código que possa ser aplicado diretamente.
         }
         
         $jsonBody = $body | ConvertTo-Json -Depth 10
+        Write-Log "[IA] Enviando requisição de correção para $script:CurrentProvider (tamanho: $($jsonBody.Length) caracteres)" "INFO"
         
         if (Get-Command Invoke-ResilientRestMethod -ErrorAction SilentlyContinue) {
+            Write-Log "[IA] Usando Invoke-ResilientRestMethod com retry para correção" "INFO"
             $response = Invoke-ResilientRestMethod -Uri $uri -Method Post -Headers $headers -Body $jsonBody -MaxRetries 3
         } else {
+            Write-Log "[IA] Usando Invoke-RestMethod padrão para correção" "INFO"
             $response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $jsonBody
         }
+        Write-Log "[IA] Resposta de correção recebida de $script:CurrentProvider (status: sucesso)" "OK"
         
         $jsonText = $null
         
         if ($script:CurrentProvider -eq "Anthropic") {
             $jsonText = $response.content[0].text
+            Write-Log "[Anthropic] Resposta de correção extraída (tamanho: $($jsonText.Length) caracteres)" "INFO"
         } elseif ($script:CurrentProvider -eq "Google") {
-            $jsonText = $response.candidates[0].content.parts[0].text
+            if ($response.candidates -and $response.candidates.Count -gt 0) {
+                $jsonText = $response.candidates[0].content.parts[0].text
+                Write-Log "[Google API] Resposta de correção extraída com sucesso (tamanho: $($jsonText.Length) caracteres)" "INFO"
+                Write-Log "[Google API] Número de candidates: $($response.candidates.Count)" "INFO"
+            } else {
+                Write-Log "[Google API] ERRO: Resposta de correção não contém candidates" "ERRO"
+                Write-Log "[Google API] Resposta bruta: $($response | ConvertTo-Json -Depth 10)" "ERRO"
+                return $null
+            }
         } else {
             $jsonText = $response.choices[0].message.content
+            Write-Log "[$script:CurrentProvider] Resposta de correção extraída (tamanho: $($jsonText.Length) caracteres)" "INFO"
         }
         
         $jsonMatch = [regex]::Match($jsonText, '```json\s*(.*?)\s*```', 'Singleline')
@@ -606,6 +658,10 @@ Seja específico e forneça código que possa ser aplicado diretamente.
         
     } catch {
         Write-Log "[IA] Erro na correção: $($_.Exception.Message)" "ERRO"
+        Write-Log "[IA] Detalhes do erro: $($_.Exception | ConvertTo-Json -Depth 5)" "ERRO"
+        if ($_.Exception.Response) {
+            Write-Log "[IA] Status Code: $($_.Exception.Response.StatusCode)" "ERRO"
+        }
         return $null
     }
 }
