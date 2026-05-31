@@ -1,0 +1,57 @@
+
+````yaml
+name: Android CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout source code
+      uses: actions/checkout@v4
+
+    - name: Cache Gradle dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+          .gradle
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Diagnóstico pré-build (PowerShell)
+      shell: pwsh
+      run: scripts/apk-compiler.ps1 -Command doctor
+
+    - name: Build APK
+      shell: pwsh
+      run: scripts/apk-compiler.ps1 -Command build -Variant Release
+
+    - name: Testes unitários
+      shell: bash
+      run: ./gradlew test
+
+    - name: Find generated APK
+      shell: pwsh
+      id: find-apk
+      run: |
+        scripts/apk-compiler.ps1 -Command find-apk -Variant Release
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: android-apk
+        path: app/build/outputs/apk/release/*.apk
