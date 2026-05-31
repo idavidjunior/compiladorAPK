@@ -233,15 +233,7 @@ jobs:
         Set-Content -Path "$workflowDir/android.yml" -Value $workflow -Encoding UTF8
         Write-Log "Workflow GitHub Actions gerado (MODO FALLBACK - Sem IA)" "OK"
     } else {
-        # Workflow com IA
-        $envVar = switch ($AIProvider) {
-            "OpenAI" { "OPENAI_API_KEY" }
-            "Anthropic" { "ANTHROPIC_API_KEY" }
-            "Google" { "GEMINI_API_KEY" }
-            "DeepSeek" { "DEEPSEEK_API_KEY" }
-            default { "DEEPSEEK_API_KEY" }
-        }
-        
+        # Workflow com IA (usando build direto do Gradle)
         $workflow = @"
 name: Android APK Build
 
@@ -267,17 +259,8 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
         
-      - name: 'Compilar APK com Agente de Auto-Cura IA ($AIProvider)'
-        run: |
-          chmod +x tools/self_healing_compiler.py
-          python3 tools/self_healing_compiler.py
-        env:
-          AI_PROVIDER: $AIProvider
-          $envVar`: `${{ secrets.$envVar }}
-          OPENAI_API_KEY: `${{ secrets.OPENAI_API_KEY }}
-          GEMINI_API_KEY: `${{ secrets.GEMINI_API_KEY }}
-          ANTHROPIC_API_KEY: `${{ secrets.ANTHROPIC_API_KEY }}
-          DEEPSEEK_API_KEY: `${{ secrets.DEEPSEEK_API_KEY }}
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
         
       - name: Upload APK
         uses: actions/upload-artifact@v4
