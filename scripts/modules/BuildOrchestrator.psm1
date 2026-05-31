@@ -7,6 +7,7 @@
 Import-Module (Join-Path $PSScriptRoot "Resiliency.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "GitHubAPI.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "ReconstructionEngine.psm1") -Force
+Import-Module (Join-Path $PSScriptRoot "AIApiProvider.psm1") -Force -ErrorAction SilentlyContinue
 
 # Timeout absoluto para builds (30 minutos)
 $script:BuildTimeoutMinutes = 30
@@ -172,17 +173,34 @@ function Invoke-PreBuildValidator {
 .SYNOPSIS
     Gera workflow do GitHub Actions
 .DESCRIPTION
-    Cria arquivo android.yml com configuração de build
+    Cria arquivo android.yml com configuração de build e integração IA
 .PARAMETER RootPath
     Caminho raiz do projeto
+.PARAMETER AIProvider
+    Provedor de IA selecionado
+.PARAMETER AIApiKey
+    API Key da IA
 #>
 function Invoke-WorkflowGenerator {
-    param([string]$RootPath)
+    param(
+        [string]$RootPath,
+        [string]$AIProvider = "DeepSeek",
+        [string]$AIApiKey = $null
+    )
     
     $workflowDir = "$RootPath/.github/workflows"
     New-Item -ItemType Directory -Path $workflowDir -Force | Out-Null
     
-    $workflow = @'
+    # Determinar qual variável de ambiente usar baseada no provedor
+    $envVar = switch ($AIProvider) {
+        "OpenAI" { "OPENAI_API_KEY" }
+        "Anthropic" { "ANTHROPIC_API_KEY" }
+        "Google" { "GEMINI_API_KEY" }
+        "DeepSeek" { "DEEPSEEK_API_KEY" }
+        default { "DEEPSEEK_API_KEY" }
+    }
+    
+    $workflow = @"
 name: Android APK Build
 
 on:
@@ -207,24 +225,27 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
         
-      - name: 'Compilar APK com Agente de Auto-Cura IA'
+      - name: 'Compilar APK com Agente de Auto-Cura IA ($AIProvider)'
         run: |
           chmod +x tools/self_healing_compiler.py
           python3 tools/self_healing_compiler.py
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AI_PROVIDER: $AIProvider
+          $envVar`: `${{ secrets.$envVar }}
+          OPENAI_API_KEY: `${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: `${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: `${{ secrets.ANTHROPIC_API_KEY }}
+          DEEPSEEK_API_KEY: `${{ secrets.DEEPSEEK_API_KEY }}
         
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
           path: app/build/outputs/apk/debug/app-debug.apk
-'@
+"@
     
     Set-Content -Path "$workflowDir/android.yml" -Value $workflow -Encoding UTF8
-    Write-Log "Workflow GitHub Actions gerado" "OK"
+    Write-Log "Workflow GitHub Actions gerado com provedor IA: $AIProvider" "OK"
 }
 
 <#
@@ -431,7 +452,7 @@ function Invoke-BuildMonitor {
 .PARAMETER DestPath
     Caminho de destino
 #>
-function Download-BuildArtifact {
+function Receive-BuildArtifact {
     param(
         [string]$Owner,
         [string]$Repo,
@@ -503,6 +524,10 @@ function Remove-TemporaryRepository {
     Caminho raiz do projeto
 .PARAMETER GitHubToken
     Token GitHub
+.PARAMETER AIProvider
+    Provedor de IA selecionado
+.PARAMETER AIApiKey
+    API Key da IA
 .PARAMETER LogCallback
     Callback para log
 .OUTPUTS
@@ -512,6 +537,8 @@ function Invoke-BuildOrchestrator {
     param(
         [string]$RootPath,
         [string]$GitHubToken,
+        [string]$AIProvider = "DeepSeek",
+        [string]$AIApiKey = $null,
         [scriptblock]$LogCallback
     )
     
@@ -546,8 +573,8 @@ function Invoke-BuildOrchestrator {
             Write-Log "Ferramenta de Auto-Cura IA copiada para o projeto temporário" "OK"
         }
         
-        # 3. Gerar workflow
-        Invoke-WorkflowGenerator -RootPath $tempDir
+        # 3. Gerar workflow com configuração de IA
+        Invoke-WorkflowGenerator -RootPath $tempDir -AIProvider $AIProvider -AIApiKey $AIApiKey
         
         # 4. Obter usuário do GitHub
         $tokenValidation = Test-GitHubToken -Token $GitHubToken
@@ -563,7 +590,7 @@ function Invoke-BuildOrchestrator {
         # 7. Baixar APK se sucesso
         if ($buildResult.Status -eq "SUCCESS" -and $buildResult.ArtifactId) {
             $apkDestPath = Join-Path $RootPath "app-debug.apk"
-            $downloadSuccess = Download-BuildArtifact -Owner $owner -Repo $repoName -ArtifactId $buildResult.ArtifactId -Token $GitHubToken -DestPath $apkDestPath
+            $downloadSuccess = Receive-BuildArtifact -Owner $owner -Repo $repoName -ArtifactId $buildResult.ArtifactId -Token $GitHubToken -DestPath $apkDestPath
             
             if ($downloadSuccess) {
                 $buildResult.ApkPath = $apkDestPath
@@ -609,4 +636,4 @@ function Invoke-BuildOrchestrator {
 }
 
 # Exportar funções
-Export-ModuleMember -Function Invoke-PreBuildValidator, Invoke-WorkflowGenerator, Initialize-GitRepository, Invoke-BuildMonitor, Download-BuildArtifact, Remove-TemporaryRepository, Invoke-BuildOrchestrator, Invoke-ErrorInterpreter
+Export-ModuleMember -Function Invoke-PreBuildValidator, Invoke-WorkflowGenerator, Initialize-GitRepository, Invoke-BuildMonitor, Receive-BuildArtifact, Remove-TemporaryRepository, Invoke-BuildOrchestrator, Invoke-ErrorInterpreter

@@ -231,7 +231,7 @@ function Test-DeepSeekApiKey {
     } | ConvertTo-Json -Depth 10
     
     try {
-        $response = Invoke-RestMethod -Uri $script:DeepSeekAPIUrl -Method Post -Headers $headers -Body $body
+        $null = Invoke-RestMethod -Uri $script:DeepSeekAPIUrl -Method Post -Headers $headers -Body $body
         return @{ Valid = $true }
     } catch {
         if ($_.Exception.Response.StatusCode -eq 401) {

@@ -1,4 +1,4 @@
-﻿# ============================================================
+﻿﻿# ============================================================
 # Compilador APK v10.0 - AI-Powered com DeepSeek
 # BUILD: 250a8e3-AI
 # ============================================================
@@ -18,6 +18,13 @@ $global:LblStatus = $null
 $global:AnalysisReport = $null
 $global:ReconstructionReport = $null
 $global:DeepSeekApiKey = $null
+$global:AIProvider = "DeepSeek"
+$global:AIApiKey = $null
+
+# Importar módulos
+Import-Module (Join-Path $ScriptDir "modules\Resiliency.psm1") -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $ScriptDir "modules\SecureStorage.psm1") -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $ScriptDir "modules\AIApiProvider.psm1") -Force -ErrorAction SilentlyContinue
 
 # ══════════════════════════════════════════════════════════════
 # SELF-HEALING ENGINE v9.0 - Variáveis Globais
@@ -78,27 +85,6 @@ function Save-Token([string]$token) {
     $enc = [System.Convert]::ToBase64String($bytes)
     Set-Content -Path $TokenFile -Value $enc -Encoding ASCII -Force
     Write-Log "Token salvo" "OK"
-}
-
-function Save-DeepSeekApiKey([string]$apiKey) {
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($apiKey)
-    $enc = [System.Convert]::ToBase64String($bytes)
-    Set-Content -Path "$ScriptDir\deepseek-token.dat" -Value $enc -Encoding ASCII -Force
-    $global:DeepSeekApiKey = $apiKey
-    Write-Log "API Key DeepSeek salva" "OK"
-}
-
-function Load-DeepSeekApiKey() {
-    if (Test-Path "$ScriptDir\deepseek-token.dat") {
-        try {
-            $enc = Get-Content "$ScriptDir\deepseek-token.dat" -Raw -ErrorAction Stop
-            $bytes = [System.Convert]::FromBase64String($enc.Trim())
-            $global:DeepSeekApiKey = [System.Text.Encoding]::UTF8.GetString($bytes)
-            Write-Log "API Key DeepSeek carregada" "OK"
-            return $true
-        } catch { Write-Log "Falha ao carregar API Key DeepSeek" "AVISO" }
-    }
-    return $false
 }
 
 # ══════════════════════════════════════════════════════════════
@@ -2622,7 +2608,8 @@ function Invoke-BuildReportGenerator {
 }
 
 function Start-BuildOrchestrator {
-    param([string]$Dir, [string]$Token, [System.Windows.Threading.Dispatcher]$Disp,
+    param([string]$Dir, [string]$Token, [string]$AIProvider = "DeepSeek", [string]$AIApiKey = $null,
+        [System.Windows.Threading.Dispatcher]$Disp,
         [System.Windows.Controls.TextBox]$Log, [System.Windows.Controls.TextBlock]$Lbl,
         [System.Windows.Controls.Button]$BtnC, [System.Windows.Controls.Button]$BtnA,
         [System.Windows.Window]$Win, [System.Windows.Controls.ProgressBar]$ProgBar,
@@ -2635,7 +2622,7 @@ function Start-BuildOrchestrator {
     $ps.Runspace = $rs
 
     [void]$ps.AddScript({
-        param($Dir, $Token, $Disp, $Log, $Lbl, $BtnC, $BtnA, $Win, $ProgBar, $LblProg, $UseAI)
+        param($Dir, $Token, $AIProvider, $AIApiKey, $Disp, $Log, $Lbl, $BtnC, $BtnA, $Win, $ProgBar, $LblProg, $UseAI)
 
         function UILog([string]$msg, [string]$nivel = "INFO", [string]$detalhe = "") {
             $ts = Get-Date -Format "HH:mm:ss.fff"
@@ -3867,7 +3854,7 @@ jobs:
         }
     })
 
-    [void]$ps.AddParameters(@{ Dir = $Dir; Token = $Token; Disp = $Disp; Log = $Log; Lbl = $Lbl; BtnC = $BtnC; BtnA = $BtnA; Win = $Win; ProgBar = $ProgBar; LblProg = $LblProg; UseAI = $UseAI })
+    [void]$ps.AddParameters(@{ Dir = $Dir; Token = $Token; AIProvider = $AIProvider; AIApiKey = $AIApiKey; Disp = $Disp; Log = $Log; Lbl = $Lbl; BtnC = $BtnC; BtnA = $BtnA; Win = $Win; ProgBar = $ProgBar; LblProg = $LblProg; UseAI = $UseAI })
     [void]$ps.BeginInvoke()
 }
 
@@ -3897,23 +3884,34 @@ $xaml = @'
     <Border Background="White" CornerRadius="8" Padding="14" Margin="0,0,0,10">
       <StackPanel>
         <TextBlock Text="GitHub Token" FontWeight="SemiBold" Margin="0,0,0,8"/>
-        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <PasswordBox x:Name="pwdToken" Grid.Column="0" FontFamily="Consolas" Padding="7,5" Margin="0,0,8,0"/>
-          <Button x:Name="btnSalvarToken" Grid.Column="1" Content="Salvar Token" Width="120" Margin="0,0,6,0" Background="#0078D7" Foreground="White" Padding="12,8"/>
-          <Button x:Name="btnLimparToken" Grid.Column="2" Content="Alterar" Width="80" Background="#6C757D" Foreground="White" Padding="12,8"/>
+          <Button x:Name="btnValidarToken" Grid.Column="1" Content="Validar" Width="80" Margin="0,0,6,0" Background="#28A745" Foreground="White" Padding="12,8"/>
+          <Button x:Name="btnSalvarToken" Grid.Column="2" Content="Salvar Token" Width="120" Margin="0,0,6,0" Background="#0078D7" Foreground="White" Padding="12,8"/>
+          <Button x:Name="btnLimparToken" Grid.Column="3" Content="Alterar" Width="80" Background="#6C757D" Foreground="White" Padding="12,8"/>
         </Grid>
+        <TextBlock x:Name="lblTokenStatus" Text="" FontSize="11" Margin="0,8,0,0" Foreground="#28A745"/>
       </StackPanel>
     </Border>
     
     <Border Background="#FFF3E0" CornerRadius="8" Padding="14" Margin="0,0,0,10" BorderBrush="#FFB74D" BorderThickness="1">
       <StackPanel>
-        <TextBlock Text="🤖 API Key da IA (DeepSeek)" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="#E65100"/>
-        <TextBlock Text="Configure a API Key para usar análise inteligente automática. Obtenha em: https://platform.deepseek.com/" FontSize="11" Foreground="#E65100" Margin="0,0,0,8"/>
-        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-          <PasswordBox x:Name="pwdDeepSeekKey" Grid.Column="0" FontFamily="Consolas" Padding="7,5" Margin="0,0,8,0"/>
-          <Button x:Name="btnSalvarDeepSeekKey" Grid.Column="1" Content="Salvar" Width="100" Margin="0,0,6,0" Background="#FF6F00" Foreground="White" Padding="12,8"/>
-          <Button x:Name="btnLimparDeepSeekKey" Grid.Column="2" Content="Limpar" Width="80" Background="#6C757D" Foreground="White" Padding="12,8"/>
+        <TextBlock Text="🤖 Provedor de IA" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="#E65100"/>
+        <ComboBox x:Name="cmbAIProvider" Margin="0,0,0,10" Padding="7,5" FontFamily="Segoe UI">
+          <ComboBoxItem Content="DeepSeek" Tag="DeepSeek" IsSelected="True"/>
+          <ComboBoxItem Content="OpenAI (GPT-4)" Tag="OpenAI"/>
+          <ComboBoxItem Content="Anthropic (Claude)" Tag="Anthropic"/>
+          <ComboBoxItem Content="Google Gemini" Tag="Google"/>
+        </ComboBox>
+        <TextBlock Text="API Key da IA" FontWeight="SemiBold" Margin="0,0,0,8" Foreground="#E65100"/>
+        <TextBlock x:Name="lblAIProviderInfo" Text="Configure a API Key para usar análise inteligente automática." FontSize="11" Foreground="#E65100" Margin="0,0,0,8"/>
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <PasswordBox x:Name="pwdAIKey" Grid.Column="0" FontFamily="Consolas" Padding="7,5" Margin="0,0,8,0"/>
+          <Button x:Name="btnValidarAIKey" Grid.Column="1" Content="Validar" Width="80" Margin="0,0,6,0" Background="#28A745" Foreground="White" Padding="12,8"/>
+          <Button x:Name="btnSalvarAIKey" Grid.Column="2" Content="Salvar" Width="100" Margin="0,0,6,0" Background="#FF6F00" Foreground="White" Padding="12,8"/>
+          <Button x:Name="btnLimparAIKey" Grid.Column="3" Content="Limpar" Width="80" Background="#6C757D" Foreground="White" Padding="12,8"/>
         </Grid>
+        <TextBlock x:Name="lblAIKeyStatus" Text="" FontSize="11" Margin="0,8,0,0" Foreground="#28A745"/>
       </StackPanel>
     </Border>
     
@@ -4013,11 +4011,17 @@ $reader = [System.Xml.XmlNodeReader]::new(([xml]$xaml))
 $window = [Windows.Markup.XamlReader]::Load($reader)
 
 $pwdToken = $window.FindName("pwdToken")
+$btnValidarToken = $window.FindName("btnValidarToken")
 $btnSalvarToken = $window.FindName("btnSalvarToken")
 $btnLimparToken = $window.FindName("btnLimparToken")
-$pwdDeepSeekKey = $window.FindName("pwdDeepSeekKey")
-$btnSalvarDeepSeekKey = $window.FindName("btnSalvarDeepSeekKey")
-$btnLimparDeepSeekKey = $window.FindName("btnLimparDeepSeekKey")
+$lblTokenStatus = $window.FindName("lblTokenStatus")
+$cmbAIProvider = $window.FindName("cmbAIProvider")
+$lblAIProviderInfo = $window.FindName("lblAIProviderInfo")
+$pwdAIKey = $window.FindName("pwdAIKey")
+$btnValidarAIKey = $window.FindName("btnValidarAIKey")
+$btnSalvarAIKey = $window.FindName("btnSalvarAIKey")
+$btnLimparAIKey = $window.FindName("btnLimparAIKey")
+$lblAIKeyStatus = $window.FindName("lblAIKeyStatus")
 $rbColar = $window.FindName("rbColar")
 $rbPrompt = $window.FindName("rbPrompt")
 $rbZip = $window.FindName("rbZip")
@@ -4066,14 +4070,167 @@ $btnZip.Add_Click({ $dlg = New-Object System.Windows.Forms.OpenFileDialog; $dlg.
 $btnPasta.Add_Click({ $dlg = New-Object System.Windows.Forms.FolderBrowserDialog; if ($dlg.ShowDialog() -eq "OK") { $txtPastaPath.Text = $dlg.SelectedPath } })
 $btnDestino.Add_Click({ $dlg = New-Object System.Windows.Forms.FolderBrowserDialog; $dlg.ShowNewFolderButton = $true; if ($dlg.ShowDialog() -eq "OK") { $txtDiretorio.Text = $dlg.SelectedPath } })
 
-$btnSalvarToken.Add_Click({ $token = $pwdToken.Password; if (-not [string]::IsNullOrEmpty($token)) { $global:GitHubToken = $token; Save-Token $token } })
-$btnLimparToken.Add_Click({ $pwdToken.Password = ""; $global:GitHubToken = $null })
-$btnSalvarDeepSeekKey.Add_Click({ $key = $pwdDeepSeekKey.Password; if (-not [string]::IsNullOrEmpty($key)) { Save-DeepSeekApiKey $key } })
-$btnLimparDeepSeekKey.Add_Click({ $pwdDeepSeekKey.Password = ""; $global:DeepSeekApiKey = $null; Remove-Item "$ScriptDir\deepseek-token.dat" -ErrorAction SilentlyContinue })
+# Event Handler: Validar GitHub Token
+$btnValidarToken.Add_Click({
+    $token = $pwdToken.Password
+    if ([string]::IsNullOrEmpty($token)) {
+        $lblTokenStatus.Text = "ERRO: Token não fornecido"
+        $lblTokenStatus.Foreground = "#DC3545"
+        return
+    }
+    
+    $lblTokenStatus.Text = "Validando..."
+    $lblTokenStatus.Foreground = "#FFC107"
+    
+    try {
+        $result = Test-GitHubToken -Token $token
+        if ($result.Valid) {
+            $lblTokenStatus.Text = "✓ Token válido (usuário: $($result.User))"
+            $lblTokenStatus.Foreground = "#28A745"
+            $global:GitHubToken = $token
+        } else {
+            $lblTokenStatus.Text = "✗ Token inválido: $($result.Error)"
+            $lblTokenStatus.Foreground = "#DC3545"
+        }
+    } catch {
+        $lblTokenStatus.Text = "✗ Erro na validação: $($_.Exception.Message)"
+        $lblTokenStatus.Foreground = "#DC3545"
+    }
+})
+
+# Event Handler: Salvar GitHub Token
+$btnSalvarToken.Add_Click({
+    $token = $pwdToken.Password
+    if ([string]::IsNullOrEmpty($token)) {
+        $lblTokenStatus.Text = "ERRO: Token não fornecido"
+        $lblTokenStatus.Foreground = "#DC3545"
+        return
+    }
+    
+    # Validar antes de salvar
+    $result = Test-GitHubToken -Token $token
+    if ($result.Valid) {
+        $global:GitHubToken = $token
+        Save-Token $token
+        $lblTokenStatus.Text = "✓ Token salvo e validado (usuário: $($result.User))"
+        $lblTokenStatus.Foreground = "#28A745"
+    } else {
+        $lblTokenStatus.Text = "✗ Token inválido: $($result.Error)"
+        $lblTokenStatus.Foreground = "#DC3545"
+    }
+})
+
+# Event Handler: Limpar GitHub Token
+$btnLimparToken.Add_Click({
+    $pwdToken.Password = ""
+    $global:GitHubToken = $null
+    $lblTokenStatus.Text = "Token limpo"
+    $lblTokenStatus.Foreground = "#6C757D"
+})
+
+# Event Handler: Seleção de Provedor de IA
+$cmbAIProvider.Add_SelectionChanged({
+    $selectedItem = $cmbAIProvider.SelectedItem
+    if ($selectedItem) {
+        $provider = $selectedItem.Tag.ToString()
+        $global:AIProvider = $provider
+        Set-AIProvider -Provider $provider
+        
+        # Atualizar informações do provedor
+        $config = Get-AIProviderConfig -Provider $provider
+        $infoText = switch ($provider) {
+            "DeepSeek" { "Configure a API Key para usar análise inteligente automática. Obtenha em: https://platform.deepseek.com/" }
+            "OpenAI" { "Configure a API Key para usar análise inteligente automática. Obtenha em: https://platform.openai.com/api-keys" }
+            "Anthropic" { "Configure a API Key para usar análise inteligente automática. Obtenha em: https://console.anthropic.com/" }
+            "Google" { "Configure a API Key para usar análise inteligente automática. Obtenha em: https://makersuite.google.com/app/apikey" }
+            default { "Configure a API Key para usar análise inteligente automática." }
+        }
+        $lblAIProviderInfo.Text = $infoText
+        
+        # Limpar status anterior
+        $lblAIKeyStatus.Text = ""
+        $pwdAIKey.Password = ""
+        
+        Write-Log "Provedor de IA alterado para: $provider" "INFO"
+    }
+})
+
+# Event Handler: Validar API Key da IA
+$btnValidarAIKey.Add_Click({
+    $apiKey = $pwdAIKey.Password
+    if ([string]::IsNullOrEmpty($apiKey)) {
+        $lblAIKeyStatus.Text = "ERRO: API Key não fornecida"
+        $lblAIKeyStatus.Foreground = "#DC3545"
+        return
+    }
+    
+    $lblAIKeyStatus.Text = "Validando..."
+    $lblAIKeyStatus.Foreground = "#FFC107"
+    
+    # Configurar a API Key temporariamente para validação
+    Set-AIApiKey -ApiKey $apiKey -SaveSecurely $false
+    
+    try {
+        $result = Test-AIApiKey
+        if ($result.Valid) {
+            $lblAIKeyStatus.Text = "✓ API Key válida para $($result.Provider)"
+            $lblAIKeyStatus.Foreground = "#28A745"
+            $global:AIApiKey = $apiKey
+        } else {
+            $lblAIKeyStatus.Text = "✗ API Key inválida: $($result.Error)"
+            $lblAIKeyStatus.Foreground = "#DC3545"
+        }
+    } catch {
+        $lblAIKeyStatus.Text = "✗ Erro na validação: $($_.Exception.Message)"
+        $lblAIKeyStatus.Foreground = "#DC3545"
+    }
+})
+
+# Event Handler: Salvar API Key da IA
+$btnSalvarAIKey.Add_Click({
+    $apiKey = $pwdAIKey.Password
+    if ([string]::IsNullOrEmpty($apiKey)) {
+        $lblAIKeyStatus.Text = "ERRO: API Key não fornecida"
+        $lblAIKeyStatus.Foreground = "#DC3545"
+        return
+    }
+    
+    # Validar antes de salvar
+    Set-AIApiKey -ApiKey $apiKey -SaveSecurely $false
+    $result = Test-AIApiKey
+    if ($result.Valid) {
+        Set-AIApiKey -ApiKey $apiKey -SaveSecurely $true
+        $global:AIApiKey = $apiKey
+        $lblAIKeyStatus.Text = "✓ API Key salva e validada para $($result.Provider)"
+        $lblAIKeyStatus.Foreground = "#28A745"
+    } else {
+        $lblAIKeyStatus.Text = "✗ API Key inválida: $($result.Error)"
+        $lblAIKeyStatus.Foreground = "#DC3545"
+    }
+})
+
+# Event Handler: Limpar API Key da IA
+$btnLimparAIKey.Add_Click({
+    $pwdAIKey.Password = ""
+    Remove-AIApiKey
+    $global:AIApiKey = $null
+    $lblAIKeyStatus.Text = "API Key limpa"
+    $lblAIKeyStatus.Foreground = "#6C757D"
+})
 $btnLimparLog.Add_Click({ $txtLog.Clear() })
 
-# Carregar API Key salva ao iniciar
-Load-DeepSeekApiKey
+# Carregar tokens salvos ao iniciar
+Import-Token
+
+# Carregar configuração de IA salva
+if (Test-AIApiKeyConfigured) {
+    $savedKey = Get-AIApiKey
+    if ($savedKey) {
+        Write-Log "API Key de IA carregada do Credential Manager" "OK"
+        $lblAIKeyStatus.Text = "✓ API Key carregada para $(Get-AIProvider)"
+        $lblAIKeyStatus.Foreground = "#28A745"
+    }
+}
 
 # Event Handlers do Self-Healing Engine
 $chkSelfHealing.Add_Checked({ $global:SelfHealingEnabled = $true; Write-Log "Auto-Cura ATIVADA" "OK" })
@@ -4199,18 +4356,19 @@ $btnGerar.Add_Click({
         }
     }
     
-    Start-BuildOrchestrator -Dir $txtDiretorio.Text -Token $global:GitHubToken `
+    Start-BuildOrchestrator -Dir $txtDiretorio.Text -Token $global:GitHubToken -AIProvider $global:AIProvider -AIApiKey $global:AIApiKey `
         -Disp $window.Dispatcher -Log $txtLog -Lbl $lblStatus -BtnC $btnGerar -BtnA $btnAnalisar -Win $window `
         -ProgBar $progressBar -LblProg $lblProgresso -UseAI:$useAI
 })
 
 if (Import-Token) { $pwdToken.Password = $global:GitHubToken }
-if (Load-DeepSeekApiKey) { $pwdDeepSeekKey.Password = $global:DeepSeekApiKey }
 
-Write-Log "Compilador APK v10.0 (AI-Powered) iniciado"
+Write-Log "Compilador APK v10.0 (AI-Powered Multi-IA) iniciado"
 Write-Log "Fluxo: ANALISAR → RECONSTRUIR → GERAR APK"
-if ($global:DeepSeekApiKey) {
-    Write-Log "[IA] DeepSeek API configurada - Análise inteligente ativa" "OK"
+if ($global:AIApiKey) {
+    Write-Log "[IA] API de IA configurada ($($global:AIProvider)) - Análise inteligente ativa" "OK"
+} else {
+    Write-Log "[IA] Configure uma API Key para usar análise inteligente" "AVISO"
 }
 
 $window.ShowDialog() | Out-Null
